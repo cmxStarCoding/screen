@@ -1,0 +1,7 @@
+.idea
+common/config.ini
+screen/gin.log
+screen/core
+screen/log/*
+go.sum
+static
