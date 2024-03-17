@@ -42,9 +42,9 @@ func (s SnapshotService) DoTask(requestData *snapshot.DoTaskRequest) {
 		for i := 0; i < 5; i++ {
 			if i == 0 {
 				zjRabbit.SendMessage(queue.Message{Body: string(jsonByte)})
-				//zjRabbit.SendDelayMessage(queue.Message{Body: string(jsonByte), DelayTime: 30})
+				zjRabbit.SendDelayMessage(queue.Message{Body: string(jsonByte), DelayTime: 30})
 			} else {
-				//zjRabbit.SendDelayMessage(queue.Message{Body: string(jsonByte), DelayTime: (i * 60) + 30})
+				zjRabbit.SendDelayMessage(queue.Message{Body: string(jsonByte), DelayTime: (i * 60) + 30})
 			}
 		}
 	}
@@ -473,163 +473,190 @@ setTimeout(function (){
 }
 
 func (s SnapshotService) CronSnapTask(requestData *snapshot.CronTaskRequest) (string, error) {
+	now := time.Now()
+	snapshotCronLog := "log/cron/product_flow_snapshot/" + now.Format("2006-01-02") + "/"
+	//创建cron日志文件夹
+	utils2.CreateDir(snapshotCronLog)
+
+	snapshotCronLogOpenFile, snapshotCronLogOpenFileErr := os.OpenFile(snapshotCronLog+"status.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if snapshotCronLogOpenFileErr != nil {
+		log.Fatal("创建日志文件失败")
+	}
+	defer snapshotCronLogOpenFile.Close()
+	log.SetOutput(snapshotCronLogOpenFile)
+	log.Println("任务开始执行")
+
+	cacheResult, _ := cache.RedisClient.Get("cron-crm-lock-" + now.Format("2006-01-02")).Result()
+
+	if cacheResult == "1" {
+		log.Println("脚本正在运行中")
+		return "", fmt.Errorf("脚本正在运行中")
+	}
+
+	//设置脚本锁 20小时执行时间
+	cache.RedisClient.Set("cron-crm-lock-"+now.Format("2006-01-02"), 1, 72000*1000*1000*1000)
 
 	//当前日日天数
 	var productConfigList []model.CrmProductFlowSnapshotConfig
 	database.CrmDB.Where("send_date = ? and status = 1", requestData.CronDate).Find(&productConfigList)
-	//currentTime := time.Now()
-	//database.CrmDB.Where("send_date = ? and status = 1", currentTime.Day()).Find(&productConfigList)
+
+	if len(productConfigList) <= 0 {
+		log.Println("未查到有效的产品流水配置")
+	}
 
 	lastMonth := utils.GetLastMonth("200601")
 
-	if len(productConfigList) > 0 {
-		for i := range productConfigList {
-			dirName := "log/product_flow_snapshot/" + lastMonth + "/"
-			//创建日志文件夹
-			utils2.CreateDir(dirName)
-			//设置日志文件
-			openFile, openFileErr := os.OpenFile(dirName+"product_config_"+strconv.Itoa(int(productConfigList[i].ID))+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-			if openFileErr != nil {
-				log.Fatal("创建日志文件失败")
-			}
-			log.SetOutput(openFile)
-			//查询用户
-			var crmUser = &model.CrmUser{}
-			resultErr := database.CrmDB.Where("id = ? and state = 1", productConfigList[i].CreateUserID).First(&crmUser)
+	for i := range productConfigList {
+		dirName := "log/cron/product_flow_snapshot/" + lastMonth + "/"
+		//创建日志文件夹
+		utils2.CreateDir(dirName)
+		//设置日志文件
+		openFile, openFileErr := os.OpenFile(dirName+"product_config_"+strconv.Itoa(int(productConfigList[i].ID))+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if openFileErr != nil {
+			log.Fatal("创建日志文件失败")
+		}
+		log.SetOutput(openFile)
+		//查询用户
+		var crmUser = &model.CrmUser{}
+		resultErr := database.CrmDB.Where("id = ? and state = 1", productConfigList[i].CreateUserID).First(&crmUser)
 
-			var configMsg string
-			configMsg = "月度流水配置id：" + strconv.Itoa(int(productConfigList[i].ID))
+		var configMsg string
+		configMsg = "月度流水配置id：" + strconv.Itoa(int(productConfigList[i].ID))
 
-			//已离职或者账号已经停用不再发送
-			if resultErr != nil && errors.Is(resultErr.Error, gorm.ErrRecordNotFound) {
-				log.Println(configMsg + "对应的创建人账号不存在或者已经停用")
+		//已离职或者账号已经停用不再发送
+		if resultErr != nil && errors.Is(resultErr.Error, gorm.ErrRecordNotFound) {
+			log.Println(configMsg + "对应的创建人账号不存在或者已经停用")
+			continue
+		}
+		//查询关联的产品
+		productIds, _ := utils.ConvertStringToIntSlice(productConfigList[i].ProductIds)
+		var cmsProducts []model.CmsProduct
+		database.CmsDB.Where("id in ?", productIds).Find(&cmsProducts)
+		if len(cmsProducts) < 0 {
+			log.Println(configMsg + "未查到到关联产品")
+
+			continue
+		}
+		//循环产品
+		for j := range cmsProducts {
+			logFile := strconv.Itoa(int(cmsProducts[j].ID)) + ".log"
+			productOpenFile, productOpenFileErr := os.OpenFile(dirName+logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+			if productOpenFileErr != nil {
+				log.Println(configMsg + "产品id" + strconv.Itoa(int(cmsProducts[j].ID)) + "创建日志文件失败")
 				continue
 			}
-			//查询关联的产品
-			productIds, _ := utils.ConvertStringToIntSlice(productConfigList[i].ProductIds)
-			var cmsProducts []model.CmsProduct
-			database.CmsDB.Where("id in ?", productIds).Find(&cmsProducts)
-			if len(cmsProducts) < 0 {
-				log.Println(configMsg + "未查到到关联产品")
+			log.SetOutput(productOpenFile)
+			defer productOpenFile.Close()
 
+			//创建文截图保存文件夹
+			flowSnapDirName := "../static/product_flow_snapshot/" + lastMonth + "/" + strconv.Itoa(int(cmsProducts[j].ID))
+			err := os.MkdirAll(flowSnapDirName, 0755)
+			if err != nil {
+				log.Printf("创建文件夹"+flowSnapDirName+"出错:", err)
 				continue
 			}
-			//循环产品
-			for j := range cmsProducts {
-				logFile := strconv.Itoa(int(cmsProducts[j].ID)) + ".log"
-				productOpenFile, productOpenFileErr := os.OpenFile(dirName+logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-				if productOpenFileErr != nil {
-					log.Println(configMsg + "产品id" + strconv.Itoa(int(cmsProducts[j].ID)) + "创建日志文件失败")
+
+			//查询产品关联的媒体账号
+			var cmsMediaAccounts []model.CmsMediaAccount
+			database.CmsDB.Where("product_id = ?", cmsProducts[j].ID).Find(&cmsMediaAccounts)
+			if len(cmsMediaAccounts) == 0 {
+				log.Printf("产品id：%v无关联媒体账号", cmsProducts[j].ID)
+				continue
+			}
+
+			flowImageNum := 0
+			//循环媒体账号
+			for k := range cmsMediaAccounts {
+				var productMonth = &model.CmsReportCustomProductMonth{}
+				//查询产品关联的媒体账号是否有流水
+				productMonthErr := database.MapiReportDB.Where("product_id = ? and accept_month = ? and media_type = ? and advertiser_id = ? ", cmsMediaAccounts[k].ProductID, lastMonth, cmsMediaAccounts[k].MediaID, cmsMediaAccounts[k].AdvertiserID).First(&productMonth)
+				//无流水记录
+				if productMonthErr != nil && errors.Is(productMonthErr.Error, gorm.ErrRecordNotFound) {
+					log.Printf("产品名称，%v产品id%v，不存在流水记录\n", cmsProducts[j].ProductName, cmsProducts[j].ID)
 					continue
 				}
-				log.SetOutput(productOpenFile)
-				defer productOpenFile.Close()
 
-				//创建文截图保存文件夹
-				flowSnapDirName := "../static/product_flow_snapshot/" + lastMonth + "/" + strconv.Itoa(int(cmsProducts[j].ID))
-				err := os.MkdirAll(flowSnapDirName, 0755)
+				//流水金额小于等于0.00 直接跳过
+				if productMonth.Cost <= 0.00 {
+					log.Printf("产品名称，%v产品id%v，流水金额小于0.00\n", cmsProducts[j].ProductName, cmsProducts[j].ID)
+
+					continue
+				}
+				var path string
+				//快手
+				if cmsMediaAccounts[k].MediaID == 1 {
+					path = s.SnapshotKsFlow(cmsMediaAccounts[k])
+				}
+				//字节
+				if cmsMediaAccounts[k].MediaID == 2 {
+					path = s.SnapshotZjFlow(cmsMediaAccounts[k])
+				}
+
+				if path != "" {
+					crmProductFlowSnapshotDetail := model.CrmProductFlowSnapshotDetail{
+						Month:        lastMonth,
+						MediaID:      cmsMediaAccounts[k].MediaID,
+						ProductID:    cmsMediaAccounts[k].ProductID,
+						AdvertiserID: cmsMediaAccounts[k].AdvertiserID,
+						SnapShotURL:  path,
+					}
+					database.CrmDB.Create(&crmProductFlowSnapshotDetail)
+					flowImageNum++
+				}
+
+			}
+			_, statErr := os.Stat(flowSnapDirName)
+
+			if flowImageNum > 0 && statErr == nil {
+				//压缩文件地址
+				now := time.Now()
+				_, err := utils.CompressFolderZip(flowSnapDirName, flowSnapDirName+".zip")
 				if err != nil {
-					log.Printf("创建文件夹"+flowSnapDirName+"出错:", err)
+					log.Println("压缩文件错误", err)
+				}
+
+				//上传到tos
+				path, err := utils.UploadLocalFile(flowSnapDirName+".zip", "data/product_month_flow_snap/"+lastMonth+"/"+strconv.Itoa(int(cmsProducts[j].ID))+"_"+strconv.Itoa(int(now.Unix()))+".zip")
+				if err != nil {
+					log.Println("上传到tos错误", err)
 					continue
 				}
+				log.Println("压缩包文件上传成功,保存tos路径", path)
 
-				//查询产品关联的媒体账号
-				var cmsMediaAccounts []model.CmsMediaAccount
-				database.CmsDB.Where("product_id = ?", cmsProducts[j].ID).Find(&cmsMediaAccounts)
-				if len(cmsMediaAccounts) == 0 {
-					log.Printf("产品id：%v无关联媒体账号", cmsProducts[j].ID)
-					continue
+				//删除文件夹
+				os.RemoveAll(flowSnapDirName)
+				_, err = os.Stat(flowSnapDirName + ".zip")
+				if err == nil {
+					//删除zip文件
+					err = os.Remove(flowSnapDirName + ".zip")
 				}
+				var requestData = make(map[string]interface{})
+				requestData["create_user_id"] = productConfigList[i].CreateUserID
+				requestData["product_id"] = cmsProducts[j].ID
+				requestData["product_name"] = cmsProducts[j].ProductName
+				requestData["month"] = lastMonth
+				requestData["zip_url"] = path
+				//发送压缩包地址
+				requestData["notify_type"] = 2
 
-				flowImageNum := 0
-				//循环媒体账号
-				for k := range cmsMediaAccounts {
-					var productMonth = &model.CmsReportCustomProductMonth{}
-					//查询产品关联的媒体账号是否有流水
-					productMonthErr := database.MapiReportDB.Where("product_id = ? and accept_month = ? and media_type = ? and advertiser_id = ? ", cmsMediaAccounts[k].ProductID, lastMonth, cmsMediaAccounts[k].MediaID, cmsMediaAccounts[k].AdvertiserID).First(&productMonth)
-					//无流水记录
-					if productMonthErr != nil && errors.Is(productMonthErr.Error, gorm.ErrRecordNotFound) {
-						log.Printf("产品名称，%v产品id%v，不存在流水记录\n", cmsProducts[j].ProductName, cmsProducts[j].ID)
-						continue
-					}
-
-					//流水金额小于等于0.00 直接跳过
-					if productMonth.Cost <= 0.00 {
-						log.Printf("产品名称，%v产品id%v，流水金额小于0.00\n", cmsProducts[j].ProductName, cmsProducts[j].ID)
-
-						continue
-					}
-					var path string
-					//快手
-					if cmsMediaAccounts[k].MediaID == 1 {
-						path = s.SnapshotKsFlow(cmsMediaAccounts[k])
-					}
-					//字节
-					if cmsMediaAccounts[k].MediaID == 2 {
-						path = s.SnapshotZjFlow(cmsMediaAccounts[k])
-					}
-
-					if path != "" {
-						crmProductFlowSnapshotDetail := model.CrmProductFlowSnapshotDetail{
-							Month:        lastMonth,
-							MediaID:      cmsMediaAccounts[k].MediaID,
-							ProductID:    cmsMediaAccounts[k].ProductID,
-							AdvertiserID: cmsMediaAccounts[k].AdvertiserID,
-							SnapShotURL:  path,
-						}
-						database.CrmDB.Create(&crmProductFlowSnapshotDetail)
-						flowImageNum++
-					}
-
+				//写入crm_product_flow_snapshot表
+				crmProductFlowSnapshot := model.CrmProductFlowSnapshot{
+					ProductFlowSnapshotConfigID: productConfigList[i].ID,
+					ProductID:                   cmsProducts[j].ID,
+					Month:                       lastMonth,
+					ZipURL:                      path,
 				}
-				_, statErr := os.Stat(flowSnapDirName)
-
-				if flowImageNum > 0 && statErr == nil {
-					//压缩文件地址
-					now := time.Now()
-					_, err := utils.CompressFolderZip(flowSnapDirName, flowSnapDirName+".zip")
-					if err != nil {
-						log.Println("压缩文件错误", err)
-					}
-
-					//上传到tos
-					path, err := utils.UploadLocalFile(flowSnapDirName+".zip", "data/product_month_flow_snap/"+lastMonth+"/"+strconv.Itoa(int(cmsProducts[j].ID))+"_"+strconv.Itoa(int(now.Unix()))+".zip")
-					if err != nil {
-						log.Println("上传到tos错误", err)
-						continue
-					}
-					log.Println("压缩包文件上传成功,保存tos路径", path)
-
-					//删除文件夹
-					os.RemoveAll(flowSnapDirName)
-					_, err = os.Stat(flowSnapDirName + ".zip")
-					if err == nil {
-						//删除zip文件
-						err = os.Remove(flowSnapDirName + ".zip")
-					}
-					var requestData = make(map[string]interface{})
-					requestData["create_user_id"] = productConfigList[i].CreateUserID
-					requestData["product_id"] = cmsProducts[j].ID
-					requestData["product_name"] = cmsProducts[j].ProductName
-					requestData["month"] = lastMonth
-					requestData["zip_url"] = path
-					//发送压缩包地址
-					requestData["notify_type"] = 2
-
-					//写入crm_product_flow_snapshot表
-					crmProductFlowSnapshot := model.CrmProductFlowSnapshot{
-						ProductFlowSnapshotConfigID: productConfigList[i].ID,
-						ProductID:                   cmsProducts[j].ID,
-						Month:                       lastMonth,
-						ZipURL:                      path,
-					}
-					database.CrmDB.Create(&crmProductFlowSnapshot)
-					//通知php 发送压缩包地址、配置人
-					library.SendPOSTRequest("http://127.0.0.1:8000/external/screenshot/notify", requestData)
-				}
+				database.CrmDB.Create(&crmProductFlowSnapshot)
+				//通知php 发送压缩包地址、配置人
+				library.SendPOSTRequest("http://127.0.0.1:8000/external/screenshot/notify", requestData)
 			}
 		}
 	}
+	log.SetOutput(snapshotCronLogOpenFile)
+	log.Println("任务结束执行")
+
+	//脚本解锁
+	cache.RedisClient.Del("cron-crm-lock-" + now.Format("2006-01-02"))
 	return "", nil
 }
 
