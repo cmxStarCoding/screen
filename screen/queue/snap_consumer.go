@@ -55,7 +55,7 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 	dirName := "log/snapshot_consumer/" + today + "/"
 
 	//创建日志文件夹
-	utils2.CreateLogDir(dirName)
+	utils2.CreateDir(dirName)
 	//设置日志文件
 	openFile, openFileErr := os.OpenFile(dirName+DoTaskRequest.JobNo+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if openFileErr != nil {
@@ -158,12 +158,15 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 	      }
 	  }, 2000);
 	
-	`), &ret)); err != nil {
+	`), &ret),
+		//设置100条分页后页面需要加载时间
+		chromedp.Sleep(10*time.Second),
+	); err != nil {
 		log.Println(TaskMsg+"运行弹窗js错误", err)
 		panic(TaskMsg + "运行弹窗js错误" + err.Error())
 	}
 	//设置100条分页后页面需要加载时间
-	time.Sleep(10 * time.Second)
+	//time.Sleep(10 * time.Second)
 
 	// 遍历切片，在每个元素两侧添加引号
 	for i, str := range DoTaskRequest.AdvertiserIds {
@@ -403,7 +406,7 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 	   th.style.display = 'none'; // 隐藏不在白名单内的 th 标签
 	
 	   var tbody = document.querySelector('tbody');
-	   if (!tbody) {
+	   if (!tbody) {-
 	     console.log('未找到表格的 tbody 元素');
 	     return;
 	   }
@@ -445,11 +448,13 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 	 // end
 	}
 	}
-	`), &ret)); err != nil {
+	`), &ret),
+		chromedp.Sleep(3*time.Second),
+	); err != nil {
 		panic(TaskMsg + "运行过滤dom的js脚本错误" + err.Error())
 	}
 	//给予过滤数据的js脚本一定运行时间
-	time.Sleep(3 * time.Second)
+	//time.Sleep(3 * time.Second)
 
 	var resCount = -1
 	chromedp.Run(ctx3, chromedp.Evaluate(`document.querySelectorAll(".byted-Table-Implement tr").length`, &resCount))
@@ -478,7 +483,10 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 		//); err != nil {
 		//	log.Fatal(err)
 		//}
-		screenshotImageName := DoTaskRequest.JobNo + ".png"
+		//创建日志文件夹
+		utils2.CreateDir("../static/zj_screen_snap/")
+		now := time.Now()
+		screenshotImageName := DoTaskRequest.JobNo + "_" + strconv.Itoa(int(now.Unix())) + ".png"
 		// 将截图保存到文件
 		if err := ioutil.WriteFile("../static/zj_screen_snap/"+screenshotImageName, screenshot, 0644); err != nil {
 			log.Println(TaskMsg+"文件保存错误", err)
@@ -495,7 +503,6 @@ func SnapshotZjConsumer(d amqp.Delivery) {
 		database.CrmDB.Model(crmScreenshotJob).Where("job_no = ?", DoTaskRequest.JobNo).Updates(map[string]interface{}{"status": 2, "url": path, "fail_msg": ""})
 
 		//删除截图文件
-
 		err = os.Remove("../static/zj_screen_snap/" + screenshotImageName)
 		if err != nil {
 			log.Println(TaskMsg+"删除系统本地截图文件错误", err)
@@ -535,7 +542,7 @@ func SnapshotKSConsumer(d amqp.Delivery) {
 	dirName := "log/snapshot_consumer/" + today + "/"
 
 	//创建日志文件夹
-	utils2.CreateLogDir(dirName)
+	utils2.CreateDir(dirName)
 	//设置日志文件
 	openFile, openFileErr := os.OpenFile(dirName+DoTaskRequest.JobNo+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if openFileErr != nil {
@@ -603,25 +610,19 @@ func SnapshotKSConsumer(d amqp.Delivery) {
 		// 等待页面加载完，这里给足够的时间来渲染
 		chromedp.Sleep(7 * time.Second),
 		chromedp.Navigate("https://agent.e.kuaishou.com/finance-management/record/advertiser"),
+		// 等待页面加载完，这里给足够的时间来渲染
+		chromedp.Sleep(10 * time.Second),
 	}); err != nil {
 		log.Println(TaskMsg + "运行浏览器时错误" + err.Error())
 		panic(TaskMsg + "运行浏览器时错误" + err.Error())
 	}
-	// 等待页面加载完，这里给足够的时间来渲染
-	time.Sleep(10 * time.Second)
 
 	var resCount = -1
-	//空元素dom节点不存在则可视为表格存在数据
-	chromedp.Run(ctx3, chromedp.Evaluate(`document.querySelectorAll(".agent-empty-description").length`, &resCount))
-	log.Println(TaskMsg+"空元素标签的dom节点数量", resCount)
+	//表格区域存在
+	chromedp.Run(ctx3, chromedp.Evaluate(`document.querySelectorAll(".agent-table-tbody").length`, &resCount))
+	log.Println(TaskMsg+"表格元素dom节点数量", resCount)
 
-	//双中判定，防止跳转到其他页面，空元素dom节点不仅仅是列表页面有
-	var res1Count = -1
-	chromedp.Run(ctx3, chromedp.Evaluate(`document.querySelectorAll(".table-column-component__head").length`, &res1Count))
-	log.Println(TaskMsg+"表格头部dom节点数量", res1Count)
-
-	if resCount == 0 && res1Count > 0 {
-
+	if resCount > 0 {
 		var ret any
 		if err := chromedp.Run(ctx3, chromedp.Evaluate(fmt.Sprintf(`
 	var element1 = document.querySelector(".iLwFbl");
@@ -912,13 +913,21 @@ function hideColumnsAndCellsNotInWhitelist() {
     // end
   }
 }
-`), &ret)); err != nil {
+`),
+			&ret),
+			chromedp.Sleep(15*time.Second),
+		); err != nil {
 			log.Println(TaskMsg + "处理表格dom数据js错误" + err.Error())
 			panic(TaskMsg + "处理表格dom数据js错误" + err.Error())
 		}
 
-		//运行过滤数据脚本js
-		time.Sleep(4 * time.Second)
+		//双中判定，防止跳转到其他页面，空元素dom节点不仅仅是列表页面有
+		var res1Count = -1
+		chromedp.Run(ctx3, chromedp.Evaluate(`document.querySelectorAll(".agent-table-tbody tr").length`, &res1Count))
+		if res1Count <= 0 {
+			log.Println(TaskMsg + "表格内行数量" + strconv.Itoa(res1Count))
+			panic(TaskMsg + "表格内行数量" + strconv.Itoa(res1Count))
+		}
 
 		var screenshot []byte
 		if err := chromedp.Run(ctx3,
@@ -927,14 +936,17 @@ function hideColumnsAndCellsNotInWhitelist() {
 			log.Println(TaskMsg + "表格截图错误" + err.Error())
 			panic(TaskMsg + "表格截图错误" + err.Error())
 		}
-		screenshotImageName := DoTaskRequest.JobNo + ".png"
+
+		//创建日志文件夹
+		utils2.CreateDir("../static/ks_screen_snap/")
+
+		now := time.Now()
+		screenshotImageName := DoTaskRequest.JobNo + "_" + strconv.Itoa(int(now.Unix())) + ".png"
 		// 将截图保存到文件
 		if err := os.WriteFile("../static/ks_screen_snap/"+screenshotImageName, screenshot, 0644); err != nil {
 			log.Println(TaskMsg + "保存截图文件错误" + err.Error())
 			panic(TaskMsg + "保存截图文件错误" + err.Error())
 		}
-
-		time.Sleep(3 * time.Second)
 
 		path, err := utils.UploadLocalFile("../static/ks_screen_snap/"+screenshotImageName, "data/ks/ks_screen_snap/"+screenshotImageName)
 		if err != nil {
@@ -961,7 +973,7 @@ function hideColumnsAndCellsNotInWhitelist() {
 		library.SendPOSTRequest("http://127.0.0.1:8000/external/screenshot/notify", requestData)
 
 	} else {
-		panic("存在空元素标签的dom节点数量" + strconv.Itoa(resCount) + "表格头部dom节点数量" + strconv.Itoa(res1Count))
+		panic(TaskMsg + "表格元素dom节点数量" + strconv.Itoa(resCount))
 	}
 
 }

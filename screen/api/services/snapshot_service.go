@@ -111,12 +111,13 @@ func (s SnapshotService) SnapshotZjFlow(CmsMediaAccount model.CmsMediaAccount) s
 		}),
 		chromedp.EmulateViewport(1920, 1080),
 		chromedp.Navigate("https://agent.oceanengine.com/admin/company/account/management"),
+		chromedp.Sleep(10 * time.Second),
 	}); err != nil {
 		log.Println(failMsg + "运行浏览器时错误" + err.Error())
 		panic(failMsg + "运行浏览器时错误" + err.Error())
 	}
 	//这里时间长一点，时间短页面可能会出现页面渲染不完整的情况
-	time.Sleep(10 * time.Second)
+	//time.Sleep(10 * time.Second)
 	//查询是否有指定的dom元素
 	ch := addNewTabListener(ctx)
 
@@ -170,12 +171,13 @@ func (s SnapshotService) SnapshotZjFlow(CmsMediaAccount model.CmsMediaAccount) s
 		chromedp.EmulateViewport(1920, 1080),
 		//访问流水页面
 		chromedp.Navigate("https://ad.oceanengine.com/cg_trade/finance/flow/list?aadvid="+CmsMediaAccount.AdvertiserID+"&from_app=ad&app_key=0&advid="+CmsMediaAccount.AdvertiserID),
+		chromedp.Sleep(10*time.Second),
 	); err != nil {
 		panic(failMsg + "运行js时错误" + err.Error())
 	}
 
 	//等待页面响应
-	time.Sleep(10 * time.Second)
+	//time.Sleep(10 * time.Second)
 
 	//判断流水页面dom是否存在
 	var flowHeaderCount = -1
@@ -212,12 +214,14 @@ func (s SnapshotService) SnapshotZjFlow(CmsMediaAccount model.CmsMediaAccount) s
 	           startEnd.click();
 	       }
 	   },1000)
-	`), &ret)); err != nil {
+	`), &ret),
+		chromedp.Sleep(2*time.Second),
+	); err != nil {
 		log.Println(failMsg + "运行js时错误" + err.Error())
 		panic(failMsg + "运行js时错误" + err.Error())
 	}
 	//等待接口返回数据进行dom渲染
-	time.Sleep(2 * time.Second)
+	//time.Sleep(2 * time.Second)
 	// 截图
 	var screenshot []byte
 	if err := chromedp.Run(ctx1,
@@ -319,13 +323,15 @@ func (s SnapshotService) SnapshotKsFlow(CmsMediaAccount model.CmsMediaAccount) s
 		chromedp.Sleep(4 * time.Second),
 		//访问子账号页面
 		chromedp.Click(".agent-table-body tr:nth-child(2) td:nth-child(3) a:nth-child(1)", chromedp.ByQuery),
+		//这里时间长一点，时间短页面可能会出现子账号页面渲染不完整的情况
+		chromedp.Sleep(7 * time.Second),
 	}); err != nil {
 		log.Println(failMsg + "运行浏览器时错误" + err.Error())
 		panic(failMsg + "运行浏览器时错误" + err.Error())
 
 	}
 	//这里时间长一点，时间短页面可能会出现子账号页面渲染不完整的情况
-	time.Sleep(7 * time.Second)
+	//time.Sleep(7 * time.Second)
 
 	//切换tab需要创建新的上下文节点
 	ctx1, cancel1 := chromedp.NewContext(ctx, chromedp.WithTargetID(<-ch))
@@ -352,11 +358,13 @@ func (s SnapshotService) SnapshotKsFlow(CmsMediaAccount model.CmsMediaAccount) s
 	}
 	// 移动鼠标到指定位置
 	if err := chromedp.Run(ctx1,
-		chromedp.MouseEvent("mouseMoved", float64(1732), float64(16))); err != nil {
+		chromedp.MouseEvent("mouseMoved", float64(1732), float64(16)),
+		chromedp.Sleep(2*time.Second),
+	); err != nil {
 		log.Println(failMsg + "移动鼠标时错误" + err.Error())
 		panic(failMsg + "移动鼠标时错误" + err.Error())
 	}
-	time.Sleep(4 * time.Second)
+	//time.Sleep(4 * time.Second)
 
 	var ret any
 	if err := chromedp.Run(ctx1, chromedp.Evaluate(fmt.Sprintf(`
@@ -428,12 +436,15 @@ setTimeout(function (){
 	 	tdElement.click();
 	} 
 },3000)
-`), &ret)); err != nil {
+`), &ret),
+		//等待7秒给接口响应时间，这里包含了，异步执行js的时间
+		chromedp.Sleep(7*time.Second),
+	); err != nil {
 		log.Println(failMsg + "加载js时错误" + err.Error())
 		panic(failMsg + "加载js时错误" + err.Error())
 	}
 	//等待7秒给接口响应时间，这里包含了，异步执行js的时间
-	time.Sleep(7 * time.Second)
+	//time.Sleep(7 * time.Second)
 
 	// 全屏截图
 	var screenshot []byte
@@ -475,7 +486,7 @@ func (s SnapshotService) CronSnapTask(requestData *snapshot.CronTaskRequest) (st
 		for i := range productConfigList {
 			dirName := "log/product_flow_snapshot/" + lastMonth + "/"
 			//创建日志文件夹
-			utils2.CreateLogDir(dirName)
+			utils2.CreateDir(dirName)
 			//设置日志文件
 			openFile, openFileErr := os.OpenFile(dirName+"product_config_"+strconv.Itoa(int(productConfigList[i].ID))+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 			if openFileErr != nil {
@@ -484,7 +495,7 @@ func (s SnapshotService) CronSnapTask(requestData *snapshot.CronTaskRequest) (st
 			log.SetOutput(openFile)
 			//查询用户
 			var crmUser = &model.CrmUser{}
-			resultErr := database.CrmDB.Where("id = ? and leave_time is null and state = 1", productConfigList[i].CreateUserID).First(&crmUser)
+			resultErr := database.CrmDB.Where("id = ? and state = 1", productConfigList[i].CreateUserID).First(&crmUser)
 
 			var configMsg string
 			configMsg = "月度流水配置id：" + strconv.Itoa(int(productConfigList[i].ID))
